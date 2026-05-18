@@ -37,7 +37,7 @@ training:
   seed: 42
   lr: 3.0e-5
   batch_size: 4
-  max_epochs: 100
+  max_epochs: 10
   precision: 16
   num_worker: 8
   warmup: 0.06

@@ -5,4 +5,5 @@ data_ssds/*
 uv.lock
 CLAUDE.md
 working_plan.md
+*__pycache__*
 
