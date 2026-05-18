@@ -180,6 +180,26 @@ class TrainingConfig(BaseModel):
     test_from_ckpt: Optional[str] = None
     test_opt1: Optional[str] = None
 
+    # Stacked NER — for datasets with nested or same-span multi-label annotations.
+    # When False (default), the standard single-layer BIO head is used.
+    ner_stacked: bool = False
+    # Number of parallel BIO output layers. Set to the maximum nesting depth in
+    # your data (usually 2). Entities that cannot fit are dropped with a warning
+    # at preprocessing time. Has no effect when ner_stacked is False.
+    num_ner_layers: int = 1
+    # Condition layer i on the predicted (or gold) output of layer i-1 via a
+    # learned tag embedding. Useful when inner entities are semantically related
+    # to their outer container. Has no effect when num_ner_layers == 1.
+    stacked_ner_conditioning: bool = False
+    # Use gold lower-layer tags as conditioning signal during training
+    # (teacher forcing). Reduces exposure bias during training.
+    # Ignored when stacked_ner_conditioning is False.
+    stacked_ner_teacher_forcing: bool = True
+    # Priority-ordered list of entity labels for same-span multi-label cases.
+    # The first label in the list is assigned to layer 0, the second to layer 1,
+    # etc. Labels not listed are sorted lexically as a deterministic fallback.
+    stacked_ner_label_preference: List[str] = Field(default_factory=list)
+
     # Misc
     no_borther_confirm: bool = True
     fast_dev_run: bool = False

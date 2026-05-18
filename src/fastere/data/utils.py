@@ -2,6 +2,51 @@ import numpy as np
 import torch
 
 
+def _assign_ner_to_layers(entities, num_layers, label_preference):
+    """Greedily assign entities to BIO layers without conflicts within a layer.
+
+    Sort key: (start_sent, -span_length, pref_rank, label) so earlier-start,
+    longer-span, preferred-label entities are placed first.  Two spans conflict
+    when they overlap: s1 <= e2 and s2 <= e1 (inclusive end indices).
+
+    Returns a list of (ner, layer_idx) tuples.  Entities that cannot fit in any
+    layer are dropped with a printed warning.
+    """
+    pref_rank = {label: i for i, label in enumerate(label_preference)}
+
+    def sort_key(ner):
+        span_len = ner.span.end_sent - ner.span.start_sent
+        rank = pref_rank.get(ner.label, len(label_preference))
+        return (ner.span.start_sent, -span_len, rank, ner.label)
+
+    sorted_entities = sorted(entities, key=sort_key)
+
+    layer_occupants = [[] for _ in range(num_layers)]
+    assignments = []
+
+    for ner in sorted_entities:
+        s1, e1 = ner.span.start_sent, ner.span.end_sent
+        placed = False
+        for layer_idx in range(num_layers):
+            conflict = any(
+                s1 <= e2 and s2 <= e1
+                for occ in layer_occupants[layer_idx]
+                for s2, e2 in [(occ.span.start_sent, occ.span.end_sent)]
+            )
+            if not conflict:
+                layer_occupants[layer_idx].append(ner)
+                assignments.append((ner, layer_idx))
+                placed = True
+                break
+        if not placed:
+            print(
+                f"Warning: entity [{s1},{e1}] '{ner.label}' could not fit in any of "
+                f"{num_layers} NER layers and was dropped."
+            )
+
+    return assignments
+
+
 def convert_dataset_to_samples(dataset, config, tokenizer, is_test=False):
     """Convert a Dataset to padded tensors ready for DataLoader."""
     samples = []
@@ -127,7 +172,14 @@ def convert_dataset_to_samples(dataset, config, tokenizer, is_test=False):
             end2idx = [mi + sent_start for mi in end2idx]
 
             ent_type = {}
-            ent_maps = torch.zeros(len(tokenized_tokens), dtype=torch.int16)
+            stacked = config.ner_stacked and config.get("num_ner_layers", 1) > 1
+            num_ner_layers = config.get("num_ner_layers", 1) if stacked else 1
+            if stacked:
+                ent_maps = torch.zeros(
+                    len(tokenized_tokens), num_ner_layers, dtype=torch.int16
+                )
+            else:
+                ent_maps = torch.zeros(len(tokenized_tokens), dtype=torch.int16)
             ent_maps_2d = torch.zeros(
                 len(tokenized_tokens), len(tokenized_tokens), dtype=torch.int8
             )
@@ -154,16 +206,37 @@ def convert_dataset_to_samples(dataset, config, tokenizer, is_test=False):
                         ent_type[(ner_s, ner_e)] = ner2id[ner.label]
                     added_text.append(text)
             else:
-                for ner in sent.ner:
-                    ent_s = start2idx[ner.span.start_sent]
-                    ent_e = end2idx[ner.span.end_sent]
-                    if ent_s >= max_seq_len or ent_e >= max_seq_len:
-                        continue
-                    ent_maps[ent_s] = ner2id[ner.label] + 1
-                    ent_maps[ent_s + 1 : ent_e] = ner2id[ner.label] + len(ner2id) + 1
-                    ent_maps_2d[ent_s, ent_e] = ner2id[ner.label] + 1
-                    assert ent_s < ent_e
-                    ent_type[(ent_s, ent_e)] = ner2id[ner.label]
+                if stacked:
+                    label_pref = list(config.get("stacked_ner_label_preference") or [])
+                    assignments = _assign_ner_to_layers(
+                        sent.ner, num_ner_layers, label_pref
+                    )
+                    for ner, layer_idx in assignments:
+                        ent_s = start2idx[ner.span.start_sent]
+                        ent_e = end2idx[ner.span.end_sent]
+                        if ent_s >= max_seq_len or ent_e >= max_seq_len:
+                            continue
+                        ent_maps[ent_s, layer_idx] = ner2id[ner.label] + 1
+                        ent_maps[ent_s + 1 : ent_e, layer_idx] = (
+                            ner2id[ner.label] + len(ner2id) + 1
+                        )
+                        ent_maps_2d[ent_s, ent_e] = ner2id[ner.label] + 1
+                        assert ent_s < ent_e
+                        if (ent_s, ent_e) not in ent_type:
+                            ent_type[(ent_s, ent_e)] = ner2id[ner.label]
+                else:
+                    for ner in sent.ner:
+                        ent_s = start2idx[ner.span.start_sent]
+                        ent_e = end2idx[ner.span.end_sent]
+                        if ent_s >= max_seq_len or ent_e >= max_seq_len:
+                            continue
+                        ent_maps[ent_s] = ner2id[ner.label] + 1
+                        ent_maps[ent_s + 1 : ent_e] = (
+                            ner2id[ner.label] + len(ner2id) + 1
+                        )
+                        ent_maps_2d[ent_s, ent_e] = ner2id[ner.label] + 1
+                        assert ent_s < ent_e
+                        ent_type[(ent_s, ent_e)] = ner2id[ner.label]
 
             triples = set()
             for rel in sent.relations:
@@ -188,10 +261,10 @@ def convert_dataset_to_samples(dataset, config, tokenizer, is_test=False):
                 max_tripes_count - len(triples)
             )
 
-            sent_mask = torch.zeros_like(ent_maps)
+            sent_mask = torch.zeros(len(tokenized_tokens), dtype=torch.int16)
             sent_mask[sent_start:sent_end] = 1
             if config.use_cross_ner:
-                sent_mask = torch.ones_like(ent_maps)
+                sent_mask = torch.ones(len(tokenized_tokens), dtype=torch.int16)
                 sent_mask[input_ids == tokenizer.pad_token_id] = 0
 
             sample["input_ids"] = input_ids

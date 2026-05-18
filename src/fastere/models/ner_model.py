@@ -59,10 +59,31 @@ class EntDecoder(nn.Module):
         self.ent_ids = theta.ent_ids
         hidden_size = config.model.hidden_size
         tag_size = len(self.ent_ids)
+        self.num_ner_layers = config.num_ner_layers if config.ner_stacked else 1
+        self.conditioning = (
+            config.ner_stacked
+            and config.stacked_ner_conditioning
+            and self.num_ner_layers > 1
+        )
+
         self.ffn = MultiNonLinearClassifier(
             hidden_size, tag_size, layers_num=self.config.ent_mlp_layer_num
         )
         self.ffn_bio = MultiNonLinearClassifier(hidden_size, 3)
+
+        if self.num_ner_layers > 1:
+            extra_input = hidden_size * 2 if self.conditioning else hidden_size
+            self.extra_heads = nn.ModuleList(
+                [
+                    MultiNonLinearClassifier(
+                        extra_input, tag_size, layers_num=self.config.ent_mlp_layer_num
+                    )
+                    for _ in range(self.num_ner_layers - 1)
+                ]
+            )
+            if self.conditioning:
+                self.tag_embedding = nn.Embedding(tag_size, hidden_size)
+
         self.attn = nn.ModuleList(
             [
                 EntAttentionLayer(
@@ -72,29 +93,67 @@ class EntDecoder(nn.Module):
             ]
         )
 
-    def forward(self, hidden_states):
+    def forward(self, hidden_states, labels=None):
         if self.config.dry_test:
             for layer in self.attn:
                 hidden_states = layer(hidden_states)
-            logits = self.ffn(hidden_states)
+            logits0 = self.ffn(hidden_states)
+            if self.num_ner_layers == 1:
+                return {
+                    "logits": logits0,
+                    "logits_out": [None] * len(self.attn) + [logits0],
+                    "attention_out": [None] * len(self.attn) + [hidden_states],
+                }
+            stacked = self._stack_layers(hidden_states, logits0, labels)
             return {
-                "logits": logits,
-                "logits_out": [None] * len(self.attn) + [logits],
+                "logits": stacked,
+                "logits_out": [None] * len(self.attn) + [logits0],
                 "attention_out": [None] * len(self.attn) + [hidden_states],
             }
 
-        output = {
-            "logits": self.ffn(hidden_states),
-            "logits_out": [self.ffn(hidden_states)],
-            "attention_out": [hidden_states],
-        }
+        logits_out = [self.ffn(hidden_states)]
+        attention_out = [hidden_states]
         for layer in self.attn:
             hidden_states = layer(hidden_states)
-            logits = self.ffn(hidden_states)
-            output["logits"] = logits
-            output["logits_out"].append(logits)
-            output["attention_out"].append(hidden_states)
-        return output
+            logits_out.append(self.ffn(hidden_states))
+            attention_out.append(hidden_states)
+
+        logits0 = logits_out[-1]
+        if self.num_ner_layers == 1:
+            return {
+                "logits": logits0,
+                "logits_out": logits_out,
+                "attention_out": attention_out,
+            }
+
+        stacked = self._stack_layers(hidden_states, logits0, labels)
+        return {
+            "logits": stacked,
+            "logits_out": logits_out,
+            "attention_out": attention_out,
+        }
+
+    def _stack_layers(self, hidden_states, logits0, labels):
+        """Build [batch, seq, num_layers, tag_size] from per-layer heads."""
+        logits_per_layer = [logits0]
+        for i, head in enumerate(self.extra_heads):
+            if self.conditioning:
+                use_tf = (
+                    self.training
+                    and self.config.stacked_ner_teacher_forcing
+                    and labels is not None
+                )
+                if use_tf:
+                    cond_tags = labels[:, :, i].long().clamp(min=0)
+                else:
+                    cond_tags = logits_per_layer[-1].argmax(dim=-1)
+                layer_input = torch.cat(
+                    [hidden_states, self.tag_embedding(cond_tags)], dim=-1
+                )
+            else:
+                layer_input = hidden_states
+            logits_per_layer.append(head(layer_input))
+        return torch.stack(logits_per_layer, dim=2)
 
 
 class NERModel(pl.LightningModule):
@@ -110,7 +169,7 @@ class NERModel(pl.LightningModule):
         if mask is None:
             mask = torch.ones(hidden_states.shape[:2], device=hidden_states.device)
 
-        out = self.decoder(hidden_states)
+        out = self.decoder(hidden_states, labels=labels)
         logits = out["logits"]
 
         if mode == "test" and self.config.dry_test:
@@ -119,25 +178,39 @@ class NERModel(pl.LightningModule):
         if labels is None:
             return logits, torch.tensor(0.0, device=logits.device)
 
+        stacked = self.config.ner_stacked and self.config.num_ner_layers > 1
         loss_fct = nn.CrossEntropyLoss(reduction="mean")
-        new_logits = logits.view(-1, logits.shape[-1])[mask.reshape(-1) > 0]
-        new_labels = labels.reshape(-1).long()[mask.reshape(-1) > 0]
-        loss = loss_fct(new_logits, new_labels)
+
+        if stacked:
+            b, s, n = labels.shape
+            mask_exp = mask.unsqueeze(-1).expand(b, s, n).reshape(-1)
+            valid_logits = logits.reshape(b * s * n, -1)[mask_exp > 0]
+            valid_labels = labels.reshape(-1).long()[mask_exp > 0]
+        else:
+            valid_logits = logits.view(-1, logits.shape[-1])[mask.reshape(-1) > 0]
+            valid_labels = labels.reshape(-1).long()[mask.reshape(-1) > 0]
 
         if self.config.use_ner_focal_loss:
             loss_fct = focal_loss(num_classes=self.ent_tags_count)
-            loss = loss_fct(new_logits, new_labels)
+        loss = loss_fct(valid_logits, valid_labels)
 
         if self.config.use_ner_layer_loss:
-            if self.config.use_first_layer_loss:
-                layer_logits = out["logits_out"][:-1]
+            if stacked:
+                aux_labels = labels[:, :, 0].reshape(-1).long()[mask.reshape(-1) > 0]
             else:
-                layer_logits = out["logits_out"][1:-1]
-            for logits_out in layer_logits[::-1]:
-                new_logits = logits_out.view(-1, logits_out.shape[-1])[
+                aux_labels = valid_labels
+            layer_logits_list = (
+                out["logits_out"][:-1]
+                if self.config.use_first_layer_loss
+                else out["logits_out"][1:-1]
+            )
+            for logits_out in layer_logits_list[::-1]:
+                if logits_out is None:
+                    continue
+                aux_logits = logits_out.view(-1, logits_out.shape[-1])[
                     mask.reshape(-1) > 0
                 ]
-                loss += loss_fct(new_logits, new_labels) * 0.1
+                loss += loss_fct(aux_logits, aux_labels) * 0.1
 
         return logits, loss
 
@@ -145,6 +218,9 @@ class NERModel(pl.LightningModule):
         self, logits, pos=None, with_score=False, mask=None, mode="train"
     ):
         """Return left-closed, right-open entity spans: [[(start, end, type), ...], ...]"""
+        if self.config.ner_stacked and self.config.num_ner_layers > 1:
+            return self._decode_stacked(logits, pos, with_score)
+
         ori_logits = logits.clone()
         is_gt = len(logits.shape) != 3 or logits.shape[-1] != self.ent_tags_count
         if not is_gt:
@@ -153,16 +229,53 @@ class NERModel(pl.LightningModule):
         entities = []
         bsz, seq_len = logits.shape[0], logits.shape[1]
         for b in range(bsz):
-            entity = []
             if pos is not None:
-                sent_start, sent_end = pos[b, 0], pos[b, 1]
+                sent_start, sent_end = int(pos[b, 0]), int(pos[b, 1])
             else:
                 sent_start, sent_end = 1, seq_len - 1
-            entity = self.default_decode_strategy(
-                logits, with_score, ori_logits, b, entity, sent_start, sent_end
+            entities.append(
+                self.default_decode_strategy(
+                    logits, with_score, ori_logits, b, [], sent_start, sent_end
+                )
             )
-            entities.append(entity)
         return entities
+
+    def _decode_stacked(self, logits, pos, with_score):
+        """Decode stacked logits/labels, merge all layers, deduplicate by (start, end, type).
+
+        Accepts logits shaped [batch, seq, num_layers, tag_size] (model output)
+        or [batch, seq, num_layers] (gold labels, already argmax indices).
+        """
+        is_gt = logits.dim() == 3
+        bsz = logits.shape[0]
+        num_layers = logits.shape[2]
+        seq_len = logits.shape[1]
+
+        all_entities = [[] for _ in range(bsz)]
+        seen = [set() for _ in range(bsz)]
+
+        for layer_idx in range(num_layers):
+            if is_gt:
+                layer_logits = logits[:, :, layer_idx]
+                ori = layer_logits
+            else:
+                ori = logits[:, :, layer_idx, :]
+                layer_logits = ori.argmax(dim=-1)
+
+            for b in range(bsz):
+                if pos is not None:
+                    sent_start, sent_end = int(pos[b, 0]), int(pos[b, 1])
+                else:
+                    sent_start, sent_end = 1, seq_len - 1
+                for ent in self.default_decode_strategy(
+                    layer_logits, with_score, ori, b, [], sent_start, sent_end
+                ):
+                    key = (ent[0], ent[1], ent[2])
+                    if key not in seen[b]:
+                        seen[b].add(key)
+                        all_entities[b].append(ent)
+
+        return all_entities
 
     def default_decode_strategy(
         self, logits, with_score, ori_logits, b, entity, sent_start, sent_end
