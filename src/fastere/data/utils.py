@@ -59,7 +59,7 @@ def convert_dataset_to_samples(dataset, config, tokenizer, is_test=False):
 
     max_seq_len = config.get("max_seq_len", config.dataset.max_seq_len)
     context_window = config.get("context_window", 0)
-    max_span_length = config.get("max_span_length", 10)
+    # max_span_length = config.get("max_span_length", 10)
 
     if context_window and context_window > max_seq_len - 2:
         print(
@@ -246,14 +246,21 @@ def convert_dataset_to_samples(dataset, config, tokenizer, is_test=False):
                 obj_e = end2idx[rel.pair[1].end_sent]
                 if any(x >= max_seq_len for x in [sub_s, sub_e, obj_s, obj_e]):
                     continue
-                sub_type = ent_type[(sub_s, sub_e)]
-                obj_type = ent_type[(obj_s, obj_e)]
+                sub_type = ent_type.get((sub_s, sub_e), 0) # @todo: check why there could no vlaue for (obj_s, obj_e)
+                if (obj_s, obj_e) not in ent_type:
+                    print("Warning: No entity type can be found for an object")
+                obj_type = ent_type.get((obj_s, obj_e), 0)  # @todo: check why there could no vlaue for (obj_s, obj_e)
                 triples.add(
                     (sub_s, sub_e, obj_s, obj_e, rel2id[rel.label], sub_type, obj_type)
                 )
                 cores_table[sub_type, obj_type, rel2id[rel.label]] = 1
 
             max_tripes_count = config.get("max_tripes_count", 30)
+            if len(triples) > max_tripes_count:
+               print(f"Warning: {len(triples)} triples are found in a sentence. Reduced to ma_tripes_count: {max_tripes_count}")
+               triples = sorted(list(triples), key=lambda x: x[0])
+               triples = triples[:max_tripes_count]
+               triples = set(triples)
             assert (
                 len(triples) <= max_tripes_count
             ), f"triples count {len(triples)} > {max_tripes_count}"

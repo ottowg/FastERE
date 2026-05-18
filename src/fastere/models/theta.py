@@ -524,7 +524,7 @@ class Theta(pl.LightningModule):
                         ner_preds.append([w_s, w_e, self.config.dataset.ents[t_idx]])
 
                 rel_preds = []
-                for ss, se, os, oe, r_idx in batch_out["pred_triples_raw"][b]:
+                for ss, se, os_, oe, r_idx in batch_out["pred_triples_raw"][b]:
                     sw_s = self._subword_to_word_start(
                         ss, sent_start, start2idx, sent_start_word
                     )
@@ -532,7 +532,7 @@ class Theta(pl.LightningModule):
                         se, sent_start, end2idx, sent_start_word
                     )
                     ow_s = self._subword_to_word_start(
-                        os, sent_start, start2idx, sent_start_word
+                        os_, sent_start, start2idx, sent_start_word
                     )
                     ow_e = self._subword_to_word_end(
                         oe, sent_start, end2idx, sent_start_word

@@ -8,7 +8,8 @@ from transformers.models.bert.modeling_bert import (
 )
 
 from fastere.models.components import MultiNonLinearClassifier
-from fastere.models.functions import getPretrainedLMHead
+
+# from fastere.models.functions import getPretrainedLMHead
 from fastere.utils.focal_loss import focal_loss
 
 

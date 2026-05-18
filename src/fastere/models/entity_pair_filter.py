@@ -3,13 +3,13 @@ import logging
 import os
 import random
 
-import numpy as np
+# import numpy as np
 import pytorch_lightning as pl
 import torch
 import torch.nn as nn
-from sklearn.metrics import f1_score, precision_score, recall_score
+# from sklearn.metrics import f1_score, precision_score, recall_score
 
-from fastere.models.components import MultiNonLinearClassifier, SelfAttention
+from fastere.models.components import MultiNonLinearClassifier  # , SelfAttention
 from fastere.utils.focal_loss import focal_loss
 from fastere.utils.metrics import f1_score_simple
 
@@ -311,13 +311,22 @@ class FilterModel(pl.LightningModule):
         if pred is not None:
             use_negative = self.config.use_negative
             if use_negative == "refine":
-                key = lambda a: (bool(a[2]), a[3])
+
+                def key(a):
+                    return bool(a[2]), a[3]
             elif use_negative == "simple":
-                key = lambda a: (bool(a[2]), -a[3])
+
+                def key(a):
+                    return bool(a[2]), -a[3]
             elif use_negative == "random":
-                key = lambda a: bool(a[2])
+
+                def key(a):
+                    return bool(a[2])
             else:
-                key = lambda a: (a[2], a[3])
+
+                def key(a):
+                    return a[2], a[3]
+
             ent_groups = sorted(ent_groups, key=key, reverse=True)
 
             if self.config.get("use_drop_top"):

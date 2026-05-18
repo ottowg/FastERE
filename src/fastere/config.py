@@ -16,7 +16,8 @@ import re
 import time
 from argparse import Namespace
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, List, Optional, Union
+from transformers import AutoConfig
 
 import yaml
 from pydantic import BaseModel, Field

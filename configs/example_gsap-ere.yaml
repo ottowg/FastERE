@@ -1,0 +1,92 @@
+# Example training config for SciERC.
+# Start training with:
+#   fastere-train --config configs/example_scierc.yaml
+
+model:
+  name: SciBERT
+  model_name_or_path: allenai/scibert_scivocab_uncased
+
+dataset:
+  name: scierc
+  train: ${DATASET_DIR}/gsap-ere/2025-05-15/train.jsonl
+  val:   ${DATASET_DIR}/gsap-ere/2025-05-15/dev.jsonl
+  test:  ${DATASET_DIR}/gsap-ere/2025-05-15/test.jsonl
+
+  ents:
+    - MLModel
+    - MLModelGeneric
+    - ModelArchitecture
+    - Method
+    - Task
+    - Dataset
+    - DatasetGeneric
+    - DataSource
+    - URL
+    - ReferenceLink
+
+  rels:
+    - coreference
+    - isComparedTo
+    - citation
+    - usedFor
+    - architecture
+    - evaluatedOn
+    - isPartOf
+    - trainedOn
+    - appliedTo
+    - isHyponymOf
+    - transformedFrom
+    - benchmarkFor
+    - generatedBy
+    - isBasedOn
+    - sourcedFrom
+    - processed
+    - hasInstanceType
+    - size
+    - url
+    - versionOf
+
+  na_label: null
+  max_seq_len: 512
+
+training:
+  tag: gsap-ere-scibert
+  ner_stacked: true
+  num_ner_layers: 2
+  stacked_ner_conditioning: false
+  stacked_ner_teacher_forcing: true
+  stacked_ner_label_preference:
+    - ReferenceLink
+    - MLModelGeneric
+    - MLModel
+    - Method
+    - ModelArchitecture
+    - DatasetGeneric
+    - Dataset
+    - DataSource
+    - Task
+    - URL
+  seed: 42
+  lr: 3.0e-5
+  batch_size: 16
+  max_epochs: 10
+  precision: 16
+  num_worker: 8
+  warmup: 0.06
+  use_cache: true
+  ent_attn_layer_num: 3
+  ent_mlp_layer_num: 2
+  rel_mlp_layer_num: 2
+  ner_lr: 5.0
+  rel_lr: 5.0
+  filter_lr: 5.0
+  ner_rate: 1.0
+  rel_rate: 1.0
+  filter_rate: 1.0
+  rel_ner_rate: 0.0
+  use_filter: true
+  use_rel_opt2: mean
+  use_ner_layer_loss: true
+  use_first_layer_loss: true
+  max_seq_len: 512
+  max_tripes_count: 30

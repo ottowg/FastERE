@@ -10,8 +10,9 @@ from transformers.models.bert.modeling_bert import (
     BertOutput,
 )
 
-from fastere.models.components import MultiNonLinearClassifier, SelfAttention
-from fastere.models.functions import getPretrainedLMHead
+from fastere.models.components import MultiNonLinearClassifier  # , SelfAttention
+
+# from fastere.models.functions import getPretrainedLMHead
 from fastere.utils.focal_loss import focal_loss
 
 
@@ -166,7 +167,7 @@ class REModel(pl.LightningModule):
     ):
         entities = gold_entities if (mode == "train" or return_loss) else pred_entities
 
-        ent_ids = theta.ent_ids
+        # ent_ids = theta.ent_ids
         device = hidden_state.device
         input_ids, _, pos, triples, _, _, _ = batch
         bsz, seq_len = input_ids.shape
@@ -263,16 +264,16 @@ class REModel(pl.LightningModule):
 
                 if mode == "train" and self.config.use_thres_train:
                     r = theta.filter.train_metrics.get("recall", 0)
-                    f1 = theta.filter.train_metrics.get("f1", 0)
+                    # f1 = theta.filter.train_metrics.get("f1", 0)
                     ent_count = len(entity)
-                    ent_count_half = int(np.round(ent_count / 2))
+                    # ent_count_half = int(np.round(ent_count / 2))
                     pair_count = len(gold_draft_ent_groups)
                     pair_count_gold = len(
                         [1 for e in gold_draft_ent_groups if e[2] != 0]
                     )
-                    pred_count_pos = len(
-                        [1 for e in pred_draft_ent_groups if e[2] > val_thres]
-                    )
+                    # pred_count_pos = len(
+                    #    [1 for e in pred_draft_ent_groups if e[2] > val_thres]
+                    # )
                     pred_count_dynamic = int(
                         pair_count - pair_count * r + pred_count * r
                     )

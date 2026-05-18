@@ -8,13 +8,14 @@ import json
 from collections import Counter
 
 import numpy as np
-import torch
-from torch.utils.data import TensorDataset
+# import torch
+# from torch.utils.data import TensorDataset
 
 
 def fields_to_batches(d, keys_to_ignore=[]):
     keys = [key for key in d.keys() if key not in keys_to_ignore]
     lengths = [len(d[k]) for k in keys]
+    #import pdb; pdb.set_trace()
     assert len(set(lengths)) == 1
     length = lengths[0]
     return [{k: d[k][i] for k in keys} for i in range(length)]
@@ -48,7 +49,7 @@ class Dataset:
         pred_docs = [json.loads(line) for line in open(pred_file)]
         merged_docs = []
         for gold, pred in zip(gold_docs, pred_docs):
-            assert gold["doc_key"] == pred["doc_key"]
+            assert gold["doc_id"] == pred["doc_id"]
             assert gold["sentences"] == pred["sentences"]
             merged = copy.deepcopy(gold)
             for k, v in pred.items():
@@ -66,9 +67,13 @@ class Dataset:
 
 class Document:
     def __init__(self, js):
-        self._doc_key = js["doc_key"]
+        if "doc_key" in js:
+            assert "doc_id" not in js
+            js["doc_id"] = js["doc_key"]
+            del js["doc_key"]
+        self._doc_id = js["doc_id"]
         entries = fields_to_batches(
-            js, ["doc_key", "clusters", "predicted_clusters", "section_starts"]
+            js, ["doc_id", "clusters", "predicted_clusters", "section_starts", "doc_tokens", "doc_token_spans", "url_inception"]
         )
         sentence_lengths = [len(entry["sentences"]) for entry in entries]
         sentence_starts = np.cumsum(sentence_lengths)
