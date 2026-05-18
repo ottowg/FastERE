@@ -198,8 +198,8 @@ def convert_dataset_to_samples(dataset, config, tokenizer, is_test=False):
             sample["triples"] = torch.tensor(triples, dtype=torch.int16)
             sample["attention_mask"] = attention_mask
             sample["pos"] = torch.tensor(
-                (sent_start, sent_end, sent.sentence_ix, sent.sentence_start, i),
-                dtype=torch.int16,
+                (sent_start, sent_end, sent.sentence_ix, sent.sentence_start, c),
+                dtype=torch.int32,
             )
             sample["ent_maps"] = ent_maps if not config.use_spert else ent_maps_2d
             sample["sent_mask"] = sent_mask

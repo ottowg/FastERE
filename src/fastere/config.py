@@ -89,6 +89,7 @@ class DatasetConfig(BaseModel):
 
 class TrainingConfig(BaseModel):
     seed: int = 42
+    seeds: Optional[List[int]] = None
     lr: float = 3e-5
     batch_size: int = 4
     test_batch_size: int = 0
@@ -236,9 +237,9 @@ class FastEREConfig(BaseModel):
             training=TrainingConfig(**training_data),
         )
 
-    def to_runtime_config(self) -> "RuntimeConfig":
+    def to_runtime_config(self, seed: Optional[int] = None) -> "RuntimeConfig":
         """Convert to the dict-based RuntimeConfig used by model components."""
-        return RuntimeConfig.from_fastere_config(self)
+        return RuntimeConfig.from_fastere_config(self, seed=seed)
 
 
 # ---------------------------------------------------------------------------
@@ -281,12 +282,18 @@ class RuntimeConfig(_SimpleConfig):
     """
 
     @classmethod
-    def from_fastere_config(cls, cfg: FastEREConfig) -> "RuntimeConfig":
+    def from_fastere_config(
+        cls, cfg: FastEREConfig, seed: Optional[int] = None
+    ) -> "RuntimeConfig":
         rc = cls()
 
         # Flatten training config into top-level keys
         for k, v in cfg.training.model_dump().items():
             rc[k] = v
+
+        # Override seed for multi-seed runs
+        if seed is not None:
+            rc["seed"] = seed
 
         # Dataset / model as sub-dicts with attribute access
         rc["dataset"] = _SimpleConfig(cfg.dataset.model_dump())
@@ -303,12 +310,17 @@ class RuntimeConfig(_SimpleConfig):
 
         # Set up output directory
         tag = cfg.training.tag
+        rc["wandb_group"] = tag
+        if seed is not None:
+            rc["tag"] = f"{tag}-seed{seed}"
         start = time.strftime("%Y-%m-%d_%H-%M-%S", time.localtime())
         output_dir = os.path.join(
             cfg.env.output_dir, "training_output", f"{start}-{tag}"
         )
         if cfg.training.debug:
             output_dir = os.path.join(cfg.env.output_dir, "debug", f"{start}-{tag}")
+        if seed is not None:
+            output_dir = os.path.join(output_dir, str(seed))
         os.makedirs(output_dir, exist_ok=True)
         rc["output_dir"] = output_dir
         rc["test_result"] = os.path.join(output_dir, "test-result.json")

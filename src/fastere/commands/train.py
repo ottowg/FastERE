@@ -49,10 +49,6 @@ def train(
 ) -> None:
     """Train a FastERE entity-relation extraction model from a YAML config."""
 
-    # Lazy imports to keep startup fast
-    from fastere.data.data_module import DataModule
-    from fastere.models.theta import Theta
-
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
     cfg = FastEREConfig.from_yaml(config)
@@ -74,7 +70,25 @@ def train(
     if precision is not None:
         cfg.training.precision = precision
 
-    rc = cfg.to_runtime_config()
+    seeds = cfg.training.seeds or [cfg.training.seed]
+    multi_seed = len(seeds) > 1
+
+    all_results = {}
+    for seed in seeds:
+        typer.echo(f"\n{'='*60}\nSeed {seed}\n{'='*60}")
+        result = _run_single_seed(cfg, seed=seed if multi_seed else None, gpu=gpu)
+        all_results[seed] = result
+
+    if multi_seed:
+        typer.echo(f"\nAll seeds complete: {all_results}")
+    return all_results
+
+
+def _run_single_seed(cfg, seed, gpu):
+    from fastere.data.data_module import DataModule
+    from fastere.models.theta import Theta
+
+    rc = cfg.to_runtime_config(seed=seed)
     seed_everything(rc.seed)
 
     data = DataModule(rc)
@@ -120,6 +134,10 @@ def train(
 
     if model_checkpoint.best_model_path:
         trainer.test(theta, datamodule=data, ckpt_path=model_checkpoint.best_model_path)
+        theta._validate_for_jsonl = True
+        trainer.validate(
+            theta, datamodule=data, ckpt_path=model_checkpoint.best_model_path
+        )
 
     wandb.finish(quiet=True)
 
@@ -133,7 +151,7 @@ def train(
         "rel_f1": theta.rel_f1,
     }
     rc.save_result(result)
-    typer.echo(f"\nTraining complete. Results: {result}")
+    typer.echo(f"Seed {rc.seed} complete. Results: {result}")
     return result
 
 
@@ -145,6 +163,7 @@ def _configure_logger(rc, cfg: FastEREConfig):
     return pl.loggers.WandbLogger(
         project=cfg.env.wandb_project,
         name=rc.tag,
+        group=rc.wandb_group,
         save_dir=rc.output_dir,
         offline=rc.offline,
         save_code=True,

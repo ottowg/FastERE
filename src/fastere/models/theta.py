@@ -1,4 +1,5 @@
 import json
+import os
 from collections import defaultdict
 
 import pytorch_lightning as pl
@@ -80,6 +81,7 @@ class Theta(pl.LightningModule):
 
         self._val_outputs: list = []
         self._test_outputs: list = []
+        self._validate_for_jsonl: bool = False
 
         self.extend_and_init_additional_tokens()
         self.register_components()
@@ -335,7 +337,11 @@ class Theta(pl.LightningModule):
         f1, p, r = f1_score(outputs, "pred_triples", "gold_triples", slice=3)
         ner_f1, ner_p, ner_r = f1_score(outputs, "pred_entities", "gold_entities")
         rel_f1, rel_p, rel_r = f1_score(
-            outputs, "pred_triples_with_gold", "gold_triples", slice=3
+            outputs, "pred_triples", "gold_triples", slice=4
+        )
+        rel_f1_plus, _, _ = f1_score(outputs, "pred_triples", "gold_triples")
+        rel_oracle_f1, rel_oracle_p, rel_oracle_r = f1_score(
+            outputs, "pred_triples_with_gold", "gold_triples", slice=4
         )
 
         self.best_f1 = max(f1, self.best_f1)
@@ -347,10 +353,26 @@ class Theta(pl.LightningModule):
         self.log_dict_values(
             {"val/rel_f1": rel_f1, "val/rel_p": rel_p, "val/rel_r": rel_r}
         )
+        self.log_dict_values({"val/rel_f1_plus": rel_f1_plus})
+        self.log_dict_values(
+            {
+                "val/rel_oracle_f1": rel_oracle_f1,
+                "val/rel_oracle_p": rel_oracle_p,
+                "val/rel_oracle_r": rel_oracle_r,
+            }
+        )
         self.filter.log_filter_val_metrics()
         self.rel_model.log_ent_pair_info()
         self.rel_model.log_filter_rate_val()
         self.rel_model.log_statistic_val()
+
+        if self._validate_for_jsonl:
+            data_file = self.config.dataset.get("val", "")
+            if data_file:
+                out_path = os.path.join(self.config.output_dir, "dev_predictions.jsonl")
+                self._write_predictions_jsonl(self._val_outputs, data_file, out_path)
+            self._validate_for_jsonl = False
+
         self._val_outputs.clear()
 
     def test_step(self, batch, batch_idx):
@@ -362,7 +384,7 @@ class Theta(pl.LightningModule):
         f1, p, r = f1_score(outputs, "pred_triples", "gold_triples", slice=4)
         f1_plus, p_plus, r_plus = f1_score(outputs, "pred_triples", "gold_triples")
         ner_f1, ner_p, ner_r = f1_score(outputs, "pred_entities", "gold_entities")
-        rel_f1, rel_p, rel_r = f1_score(
+        rel_oracle_f1, rel_oracle_p, rel_oracle_r = f1_score(
             outputs, "pred_triples_with_gold", "gold_triples", slice=4
         )
 
@@ -374,17 +396,31 @@ class Theta(pl.LightningModule):
         self.test_r = r
         self.test_f1_plus = f1_plus
         self.ner_f1 = ner_f1
-        self.rel_f1 = rel_f1
-        self.log_dict_values({"test/f1": f1, "test/p": p, "test/r": r})
+        self.rel_f1 = rel_oracle_f1
+        self.log_dict_values({"test/rel_f1": f1, "test/rel_p": p, "test/rel_r": r})
         self.log_dict_values(
             {"test/ner_f1": ner_f1, "test/ner_p": ner_p, "test/ner_r": ner_r}
         )
         self.log_dict_values(
-            {"test/rel_f1": rel_f1, "test/rel_p": rel_p, "test/rel_r": rel_r}
+            {
+                "test/rel_oracle_f1": rel_oracle_f1,
+                "test/rel_oracle_p": rel_oracle_p,
+                "test/rel_oracle_r": rel_oracle_r,
+            }
         )
         self.log_dict_values(
-            {"test/f1_plus": f1_plus, "test/p_plus": p_plus, "test/r_plus": r_plus}
+            {
+                "test/rel_f1_plus": f1_plus,
+                "test/rel_p_plus": p_plus,
+                "test/rel_r_plus": r_plus,
+            }
         )
+
+        data_file = self.config.dataset.get("test", "")
+        if data_file:
+            out_path = os.path.join(self.config.output_dir, "test_predictions.jsonl")
+            self._write_predictions_jsonl(self._test_outputs, data_file, out_path)
+
         self._test_outputs.clear()
 
     def eval_step_output(self, batch, output):
@@ -403,13 +439,128 @@ class Theta(pl.LightningModule):
         else:
             pred_triples_with_gold = []
 
+        # Raw subword positions needed for JSONL output
+        pos_list = pos.cpu().tolist()
+        pred_entities_raw = [
+            [(int(e[0]), int(e[1]), int(e[2])) for e in output["pred_entities"][b]]
+            for b in range(input_ids.shape[0])
+        ]
+        pred_triples_raw = [[] for _ in range(input_ids.shape[0])]
+        for t in output.get("triples_pred", []):
+            b = int(t[0])
+            if int(t[8]) != 0:
+                pred_triples_raw[b].append(
+                    (int(t[1]), int(t[2]), int(t[3]), int(t[4]), int(t[8]) - 1)
+                )
+
         return {
             "pred_entities": pred_entities,
             "gold_entities": gold_entities,
             "pred_triples": pred_triples,
             "gold_triples": gold_triples,
             "pred_triples_with_gold": pred_triples_with_gold,
+            "pos": pos_list,
+            "pred_entities_raw": pred_entities_raw,
+            "pred_triples_raw": pred_triples_raw,
         }
+
+    # ------------------------------------------------------------------
+    # JSONL output helpers
+    # ------------------------------------------------------------------
+
+    def _word_subword_maps(self, tokens):
+        """Return start2idx and end2idx (word → subword positions, 0-indexed within sentence)."""
+        start2idx, end2idx, pos = [], [], 0
+        for token in tokens:
+            n = len(self.tokenizer.tokenize(token))
+            start2idx.append(pos)
+            pos += n
+            end2idx.append(pos)
+        return start2idx, end2idx
+
+    def _subword_to_word_start(
+        self, subword_pos, sent_start, start2idx, sentence_start
+    ):
+        p = subword_pos - sent_start
+        for w, s in enumerate(start2idx):
+            if s == p:
+                return w + sentence_start
+        return None
+
+    def _subword_to_word_end(self, subword_pos, sent_start, end2idx, sentence_start):
+        p = subword_pos - sent_start
+        for w, e in enumerate(end2idx):
+            if e == p:
+                return w + sentence_start
+        return None
+
+    def _write_predictions_jsonl(self, outputs, data_file, out_path):
+        """Write predictions in DYGIE JSONL format (one doc per line)."""
+        from fastere.data.data_structures import Dataset as DygieDataset
+
+        dataset = DygieDataset(data_file)
+
+        # Collect predictions keyed by (doc_idx, sent_ix)
+        pred_by_key = {}
+        for batch_out in outputs:
+            for b, pos in enumerate(batch_out["pos"]):
+                sent_start, sent_end, sent_ix, sent_start_word, doc_idx = pos
+                key = (doc_idx, sent_ix)
+                if key in pred_by_key:
+                    continue
+
+                sent = dataset[doc_idx][sent_ix]
+                start2idx, end2idx = self._word_subword_maps(sent.text)
+
+                ner_preds = []
+                for s, e, t_idx in batch_out["pred_entities_raw"][b]:
+                    w_s = self._subword_to_word_start(
+                        s, sent_start, start2idx, sent_start_word
+                    )
+                    w_e = self._subword_to_word_end(
+                        e, sent_start, end2idx, sent_start_word
+                    )
+                    if w_s is not None and w_e is not None:
+                        ner_preds.append([w_s, w_e, self.config.dataset.ents[t_idx]])
+
+                rel_preds = []
+                for ss, se, os, oe, r_idx in batch_out["pred_triples_raw"][b]:
+                    sw_s = self._subword_to_word_start(
+                        ss, sent_start, start2idx, sent_start_word
+                    )
+                    sw_e = self._subword_to_word_end(
+                        se, sent_start, end2idx, sent_start_word
+                    )
+                    ow_s = self._subword_to_word_start(
+                        os, sent_start, start2idx, sent_start_word
+                    )
+                    ow_e = self._subword_to_word_end(
+                        oe, sent_start, end2idx, sent_start_word
+                    )
+                    if all(x is not None for x in [sw_s, sw_e, ow_s, ow_e]):
+                        rel_preds.append(
+                            [sw_s, sw_e, ow_s, ow_e, self.config.dataset.rels[r_idx]]
+                        )
+
+                pred_by_key[key] = {"ner": ner_preds, "rel": rel_preds}
+
+        with open(out_path, "w") as f:
+            for doc_idx, doc in enumerate(dataset.documents):
+                js = dataset.js[doc_idx]
+                n_sents = len(doc.sentences)
+                doc_out = {
+                    "doc_key": js["doc_key"],
+                    "sentences": js["sentences"],
+                    "ner": js.get("ner", [[] for _ in range(n_sents)]),
+                    "relations": js.get("relations", [[] for _ in range(n_sents)]),
+                    "predicted_ner": [],
+                    "predicted_relations": [],
+                }
+                for sent_ix in range(n_sents):
+                    preds = pred_by_key.get((doc_idx, sent_ix), {"ner": [], "rel": []})
+                    doc_out["predicted_ner"].append(preds["ner"])
+                    doc_out["predicted_relations"].append(preds["rel"])
+                f.write(json.dumps(doc_out) + "\n")
 
     def configure_optimizers(self):
         return get_optimizer(self, self.config)
