@@ -1,0 +1,77 @@
+# Example training config for ACE 2005.
+# Start training with:
+#   fastere-train --config configs/example_ace2005.yaml
+
+# --- Model ---
+model:
+  name: BERT
+  model_name_or_path: bert-base-uncased
+
+# --- Dataset ---
+# Set DATASET_DIR in .env (or adjust paths here directly).
+dataset:
+  name: ace2005
+  # Paths are relative to your working directory (or absolute).
+  train: ${DATASET_DIR}/ace2005/train.json
+  val:   ${DATASET_DIR}/ace2005/dev.json
+  test:  ${DATASET_DIR}/ace2005/test.json
+
+  # Entity types
+  ents:
+    - FAC
+    - WEA
+    - LOC
+    - VEH
+    - GPE
+    - ORG
+    - PER
+
+  # Relation types
+  rels:
+    - ART
+    - ORG-AFF
+    - GEN-AFF
+    - PHYS
+    - PER-SOC
+    - PART-WHOLE
+
+  na_label: null
+  max_seq_len: 512
+
+# --- Training ---
+training:
+  tag: ace2005-bert
+  seed: 42
+  lr: 3.0e-5
+  batch_size: 4
+  max_epochs: 100
+  precision: 16
+  num_worker: 8
+  warmup: 0.06
+  use_cache: true
+
+  # NER decoder
+  ent_attn_layer_num: 3
+  ent_attn_range: 0
+  ent_mlp_layer_num: 2
+  rel_mlp_layer_num: 2
+
+  # Learning-rate multipliers per component
+  ner_lr: 5.0
+  rel_lr: 5.0
+  filter_lr: 5.0
+
+  # Loss weights
+  ner_rate: 1.0
+  rel_rate: 1.0
+  filter_rate: 1.0
+  rel_ner_rate: 0.0
+
+  # Feature flags
+  use_filter: true
+  use_rel_opt2: mean
+  use_ner_layer_loss: true
+  use_first_layer_loss: true
+  max_seq_len: 512
+  context_window: 0
+  max_tripes_count: 30

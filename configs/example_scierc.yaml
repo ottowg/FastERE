@@ -1,0 +1,60 @@
+# Example training config for SciERC.
+# Start training with:
+#   fastere-train --config configs/example_scierc.yaml
+
+model:
+  name: SciBERT
+  model_name_or_path: allenai/scibert_scivocab_uncased
+
+dataset:
+  name: scierc
+  train: ${DATASET_DIR}/scierc/train.json
+  val:   ${DATASET_DIR}/scierc/dev.json
+  test:  ${DATASET_DIR}/scierc/test.json
+
+  ents:
+    - Task
+    - Method
+    - Metric
+    - Material
+    - OtherScientificTerm
+    - Generic
+
+  rels:
+    - USED-FOR
+    - FEATURE-OF
+    - HYPONYM-OF
+    - PART-OF
+    - COMPARE
+    - CONJUNCTION
+    - EVALUATE-FOR
+
+  na_label: null
+  max_seq_len: 512
+
+training:
+  tag: scierc-scibert
+  seed: 42
+  lr: 3.0e-5
+  batch_size: 4
+  max_epochs: 100
+  precision: 16
+  num_worker: 8
+  warmup: 0.06
+  use_cache: true
+  ent_attn_layer_num: 3
+  ent_mlp_layer_num: 2
+  rel_mlp_layer_num: 2
+  ner_lr: 5.0
+  rel_lr: 5.0
+  filter_lr: 5.0
+  ner_rate: 1.0
+  rel_rate: 1.0
+  filter_rate: 1.0
+  rel_ner_rate: 0.0
+  use_filter: true
+  use_rel_opt2: mean
+  use_ner_layer_loss: true
+  use_first_layer_loss: true
+  max_seq_len: 512
+  max_tripes_count: 30

@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fastere"
+version = "0.1.0"
+description = "Fast Framework for Entity Relation Extraction"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.8.0",
+    "pytorch-lightning>=2.6.0,<3.0",
+    "transformers>=4.36.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "python-dotenv>=1.0.0",
+    "pytorch-crf>=0.7.2",
+    "torchcrf>=1.1.0",
+    "pyyaml>=6.0",
+    "numpy>=1.26.0",
+    "wandb>=0.16.0",
+    "tensorboardX>=2.6",
+    "typer>=0.9.0",
+    "rich>=13.0.0",
+    "scikit-learn>=1.3.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "lint>=1.2.1",
+    "ruff>=0.15.5",
+    "pytest>=8.4.2",
+    "pytest-cov>=4.1.0",
+    "twine>=6.1.0",
+]
+
+[project.scripts]
+fastere-train = "fastere.commands.train:app"
+fastere-evaluate = "fastere.commands.evaluate:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fastere"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+]
+[tool.uv.sources]
+torch = { index = "pytorch-cu128"}
+torchvision = { index = "pytorch-cu128"}
+torchaudio = { index = "pytorch-cu128"}
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

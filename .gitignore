@@ -1,0 +1,8 @@
+.env
+saves/*
+data_ssds/*
+
+uv.lock
+CLAUDE.md
+working_plan.md
+
